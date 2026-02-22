@@ -1,0 +1,13 @@
+# Environment — contains secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp audio files
+*.wav
+
+# OS
+.DS_Store
