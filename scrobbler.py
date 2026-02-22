@@ -4,18 +4,6 @@ Vinyl Scrobbler — Silence-aware audio recognition and ListenBrainz scrobbling.
 
 Listens via USB microphone, identifies tracks using SongRec's fingerprinting
 (which talks to Shazam's servers), and submits listens to ListenBrainz.
-
-v5.1 — Performance, privacy, and storage hardening for always-on Pi use.
-
-Changes from v5.0:
-- Removed hardcoded ListenBrainz token; requires env var
-- Optimized RMS silence detection with stride sampling (~16x faster)
-- Added sustained audio check to reduce false triggers
-- Added cooldown + exponential backoff after recognition failures
-- Added temp file cleanup on exit and between cycles
-- Added rate limiting between Shazam recognition attempts
-- Removed unused struct import
-- Replaced mutable dict state with ScrobbleState dataclass
 """
 
 import subprocess
@@ -341,7 +329,7 @@ def submit_to_listenbrainz(match: dict) -> bool:
                     "track_name": track,
                     "additional_info": {
                         "submission_client": "vinyl-scrobbler",
-                        "submission_client_version": "5.1.0",
+                        "submission_client_version": "1.0.0",
                         "music_service": "vinyl",
                     },
                 },
@@ -436,7 +424,7 @@ def attempt_recognition(tmp_file: str) -> dict | None:
 
 def main_loop():
     """Main scrobbler loop with backoff and cleanup."""
-    log.info("Vinyl Scrobbler v5.1 (SongRec engine)")
+    log.info("Vinyl Scrobbler v1.0 (SongRec engine)")
     log.info("ALSA device: %s", ALSA_DEVICE)
     log.info("Silence threshold: %d", SILENCE_THRESHOLD)
     log.info("Sustained audio checks: %d", SUSTAINED_AUDIO_CHECKS)

@@ -28,7 +28,7 @@ nano .env
 pip install requests pydub
 
 # Run
-python scrobbler_v5.py
+python scrobbler.py
 ```
 
 ## Environment variables
