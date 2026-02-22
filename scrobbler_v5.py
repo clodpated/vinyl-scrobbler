@@ -51,13 +51,14 @@ if not LISTENBRAINZ_TOKEN:
         "Export it before running: export LISTENBRAINZ_TOKEN='your-token-here'"
     )
 
-# ALSA device — EPOS B20 mic
+# ALSA device — adjust to match your USB mic (find yours with: arecord -l)
 ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "hw:0,0")
 
-# Audio recording settings — must match mic hardware
-SAMPLE_RATE = 48000
-CHANNELS = 2
-SAMPLE_FORMAT = "S24_3LE"
+# Audio recording settings — must match your mic's hardware capabilities.
+# Check supported formats with: arecord -D hw:0,0 --dump-hw-params
+SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", "48000"))
+CHANNELS = int(os.environ.get("CHANNELS", "2"))
+SAMPLE_FORMAT = os.environ.get("SAMPLE_FORMAT", "S24_3LE")
 
 # Silence detection — uses short raw recordings
 SILENCE_THRESHOLD = int(os.environ.get("SILENCE_THRESHOLD", "500"))

@@ -2,7 +2,7 @@
 
 Identifies vinyl records playing on a turntable using Shazam audio fingerprinting (via SongRec) and scrobbles the tracks to ListenBrainz.
 
-Designed to run continuously on a Raspberry Pi with an EPOS B20 USB microphone positioned near the speakers.
+Designed to run continuously on a Raspberry Pi with a USB microphone positioned near the speakers.
 
 ## How it works
 
@@ -37,6 +37,9 @@ python scrobbler_v5.py
 |---|---|---|---|
 | `LISTENBRAINZ_TOKEN` | Yes | — | Your ListenBrainz API token |
 | `ALSA_DEVICE` | No | `hw:0,0` | ALSA capture device (`arecord -l` to list) |
+| `SAMPLE_RATE` | No | `48000` | Mic sample rate in Hz (`arecord --dump-hw-params` to check) |
+| `CHANNELS` | No | `2` | Number of audio channels (1 = mono, 2 = stereo) |
+| `SAMPLE_FORMAT` | No | `S24_3LE` | ALSA sample format (`arecord --dump-hw-params` to check) |
 | `SILENCE_THRESHOLD` | No | `500` | RMS amplitude threshold for silence detection |
 | `SUSTAINED_AUDIO_CHECKS` | No | `3` | Consecutive above-threshold checks before recognition triggers |
 | `RMS_STRIDE` | No | `16` | Sample stride for RMS calculation (higher = faster, less precise) |
@@ -50,4 +53,4 @@ python scrobbler_v5.py
 - Python 3.10+
 - [SongRec](https://github.com/marin-m/SongRec) Python fingerprinting module (`~/songrec-python/fingerprinting`)
 - `arecord` (ALSA utils)
-- EPOS B20 or similar USB microphone
+- USB microphone
