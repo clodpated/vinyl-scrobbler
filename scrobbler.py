@@ -16,77 +16,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
-from pydub import AudioSegment
 
-# ---------------------------------------------------------------------------
-# SongRec fingerprinting imports
-# ---------------------------------------------------------------------------
-
-SONGREC_DIR = os.path.expanduser("~/songrec-python/fingerprinting")
-sys.path.insert(0, SONGREC_DIR)
-
-from algorithm import SignatureGenerator
-from communication import recognize_song_from_signature
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-LISTENBRAINZ_TOKEN = os.environ.get("LISTENBRAINZ_TOKEN")
-if not LISTENBRAINZ_TOKEN:
-    sys.exit(
-        "Error: LISTENBRAINZ_TOKEN environment variable is required.\n"
-        "Export it before running: export LISTENBRAINZ_TOKEN='your-token-here'"
-    )
-
-# ALSA device — adjust to match your USB mic (find yours with: arecord -l)
-ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "hw:0,0")
-
-# Audio recording settings — must match your mic's hardware capabilities.
-# Check supported formats with: arecord -D hw:0,0 --dump-hw-params
-SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", "48000"))
-CHANNELS = int(os.environ.get("CHANNELS", "2"))
-SAMPLE_FORMAT = os.environ.get("SAMPLE_FORMAT", "S24_3LE")
-
-# Silence detection — uses short raw recordings
-SILENCE_THRESHOLD = int(os.environ.get("SILENCE_THRESHOLD", "500"))
-SILENCE_CHECK_SECONDS = 1
-
-# Sustained audio — require audio above threshold for this many consecutive
-# checks before triggering recognition. Reduces false triggers from transient
-# sounds (conversations, bumps, doorbell, etc.)
-SUSTAINED_AUDIO_CHECKS = int(os.environ.get("SUSTAINED_AUDIO_CHECKS", "3"))
-
-# RMS stride — check every Nth sample during silence detection.
-# At 48kHz stereo, stride=16 means ~6000 checks instead of ~96000.
-RMS_STRIDE = int(os.environ.get("RMS_STRIDE", "16"))
-
-# Recognition — tiered durations (seconds)
-RECOGNIZE_DURATIONS = [20, 30, 45]
-
-# Cooldown between recognition cycles (seconds)
-RECOGNITION_COOLDOWN = int(os.environ.get("RECOGNITION_COOLDOWN", "10"))
-
-# Backoff after a full recognition failure (all tiers exhausted)
-FAILURE_BACKOFF_BASE = int(os.environ.get("FAILURE_BACKOFF_BASE", "30"))
-FAILURE_BACKOFF_MAX = int(os.environ.get("FAILURE_BACKOFF_MAX", "300"))
-
-# ListenBrainz API
-LISTENBRAINZ_API_URL = "https://api.listenbrainz.org/1/submit-listens"
-
-# Logging
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
-
-# ---------------------------------------------------------------------------
-# Setup logging
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 log = logging.getLogger("vinyl-scrobbler")
+
 
 # ---------------------------------------------------------------------------
 # State
@@ -101,6 +33,8 @@ class ScrobbleState:
     track: Optional[str] = None
     scrobbled_at: float = 0.0
     consecutive_failures: int = 0
+    failure_backoff_base: int = 30
+    failure_backoff_max: int = 300
 
     def is_duplicate(self, artist: str, track: str) -> bool:
         return self.artist == artist and self.track == track
@@ -115,14 +49,11 @@ class ScrobbleState:
         self.consecutive_failures += 1
 
     def backoff_seconds(self) -> int:
-        """Exponential backoff capped at FAILURE_BACKOFF_MAX."""
+        """Exponential backoff capped at failure_backoff_max."""
         if self.consecutive_failures == 0:
             return 0
-        delay = FAILURE_BACKOFF_BASE * (2 ** (self.consecutive_failures - 1))
-        return min(delay, FAILURE_BACKOFF_MAX)
-
-
-state = ScrobbleState()
+        delay = self.failure_backoff_base * (2 ** (self.consecutive_failures - 1))
+        return min(delay, self.failure_backoff_max)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +61,7 @@ state = ScrobbleState()
 # ---------------------------------------------------------------------------
 
 
-def rms_of_raw_24bit(data: bytes) -> float:
+def rms_of_raw_24bit(data: bytes, stride: int = 16) -> float:
     """
     Calculate RMS amplitude of raw 24-bit stereo PCM audio bytes.
 
@@ -139,7 +70,7 @@ def rms_of_raw_24bit(data: bytes) -> float:
     With stride=16 this drops to ~6k with negligible accuracy loss
     for silence detection purposes.
     """
-    byte_stride = 3 * RMS_STRIDE
+    byte_stride = 3 * stride
     total_bytes = len(data)
 
     if total_bytes < 3:
@@ -159,11 +90,13 @@ def rms_of_raw_24bit(data: bytes) -> float:
     return (sum_sq / checked) ** 0.5
 
 
-def wait_for_audio() -> None:
+def wait_for_audio(*, alsa_device, sample_format, sample_rate, channels,
+                   silence_threshold, silence_check_seconds,
+                   sustained_audio_checks, rms_stride) -> None:
     """
     Block until sustained audio above the silence threshold is detected.
 
-    Requires SUSTAINED_AUDIO_CHECKS consecutive above-threshold readings
+    Requires sustained_audio_checks consecutive above-threshold readings
     to trigger, reducing false positives from transient sounds.
     """
     log.info("Listening for audio...")
@@ -174,12 +107,12 @@ def wait_for_audio() -> None:
             proc = subprocess.Popen(
                 [
                     "arecord",
-                    "-D", ALSA_DEVICE,
-                    "-f", SAMPLE_FORMAT,
-                    "-r", str(SAMPLE_RATE),
-                    "-c", str(CHANNELS),
+                    "-D", alsa_device,
+                    "-f", sample_format,
+                    "-r", str(sample_rate),
+                    "-c", str(channels),
                     "-t", "raw",
-                    "-d", str(SILENCE_CHECK_SECONDS),
+                    "-d", str(silence_check_seconds),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -191,16 +124,16 @@ def wait_for_audio() -> None:
                 log.debug("arecord exited with code %d", rc)
 
             if data:
-                rms = rms_of_raw_24bit(data)
-                if rms > SILENCE_THRESHOLD:
+                rms = rms_of_raw_24bit(data, stride=rms_stride)
+                if rms > silence_threshold:
                     consecutive_hits += 1
                     log.debug(
                         "Audio above threshold (RMS: %.0f, %d/%d)",
                         rms,
                         consecutive_hits,
-                        SUSTAINED_AUDIO_CHECKS,
+                        sustained_audio_checks,
                     )
-                    if consecutive_hits >= SUSTAINED_AUDIO_CHECKS:
+                    if consecutive_hits >= sustained_audio_checks:
                         log.info(
                             "Sustained audio detected (RMS: %.0f, %d consecutive checks)",
                             rms,
@@ -220,17 +153,18 @@ def wait_for_audio() -> None:
         time.sleep(0.1)
 
 
-def record_audio(duration: int, filepath: str) -> bool:
+def record_audio(duration: int, filepath: str, *, alsa_device, sample_format,
+                 sample_rate, channels) -> bool:
     """Record audio to a WAV file. Returns True on success."""
     log.info("Recording %ds of audio to %s", duration, filepath)
     try:
         result = subprocess.run(
             [
                 "arecord",
-                "-D", ALSA_DEVICE,
-                "-f", SAMPLE_FORMAT,
-                "-r", str(SAMPLE_RATE),
-                "-c", str(CHANNELS),
+                "-D", alsa_device,
+                "-f", sample_format,
+                "-r", str(sample_rate),
+                "-c", str(channels),
                 "-d", str(duration),
                 filepath,
             ],
@@ -261,11 +195,13 @@ def cleanup_temp_file(filepath: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def recognize_track(filepath: str) -> dict | None:
+def recognize_track(filepath: str, *, SignatureGenerator, recognize_song_from_signature) -> dict | None:
     """
     Recognize a track using SongRec's fingerprinting + Shazam API.
     Returns dict with artist, track or None.
     """
+    from pydub import AudioSegment
+
     try:
         audio = AudioSegment.from_file(filepath)
         audio = audio.set_sample_width(2)
@@ -310,7 +246,10 @@ def recognize_track(filepath: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def submit_to_listenbrainz(match: dict) -> bool:
+LISTENBRAINZ_API_URL = "https://api.listenbrainz.org/1/submit-listens"
+
+
+def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState) -> bool:
     """Submit a listen to ListenBrainz with retry."""
     artist = match["artist"]
     track = match["track"]
@@ -343,7 +282,7 @@ def submit_to_listenbrainz(match: dict) -> bool:
                 LISTENBRAINZ_API_URL,
                 json=payload,
                 headers={
-                    "Authorization": f"Token {LISTENBRAINZ_TOKEN}",
+                    "Authorization": f"Token {token}",
                     "Content-Type": "application/json",
                 },
                 timeout=10,
@@ -372,23 +311,24 @@ def submit_to_listenbrainz(match: dict) -> bool:
                 return False
 
 
-def attempt_recognition(tmp_file: str) -> dict | None:
+def attempt_recognition(tmp_file: str, *, record_durations, record_fn,
+                        recognize_fn) -> dict | None:
     """
     Try to recognize a track using tiered durations.
-    Tries 20s first, then 30s, then 45s before giving up.
+    Tries shorter samples first, then longer ones before giving up.
     Cleans up the temp file between attempts.
     """
-    for i, duration in enumerate(RECOGNIZE_DURATIONS):
+    for i, duration in enumerate(record_durations):
         attempt = i + 1
-        total = len(RECOGNIZE_DURATIONS)
+        total = len(record_durations)
 
-        if not record_audio(duration, tmp_file):
+        if not record_fn(duration, tmp_file):
             log.warning("Recording failed on attempt %d/%d", attempt, total)
             cleanup_temp_file(tmp_file)
             time.sleep(2)
             continue
 
-        match = recognize_track(tmp_file)
+        match = recognize_fn(tmp_file)
         cleanup_temp_file(tmp_file)
 
         if match:
@@ -403,7 +343,7 @@ def attempt_recognition(tmp_file: str) -> dict | None:
             log.info(
                 "No match at %ds, trying %ds (attempt %d/%d)",
                 duration,
-                RECOGNIZE_DURATIONS[i + 1],
+                record_durations[i + 1],
                 attempt,
                 total,
             )
@@ -411,36 +351,101 @@ def attempt_recognition(tmp_file: str) -> dict | None:
             log.info(
                 "No match after all %d attempts (tried %s second samples)",
                 total,
-                "/".join(str(d) for d in RECOGNIZE_DURATIONS),
+                "/".join(str(d) for d in record_durations),
             )
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Configuration and main loop
 # ---------------------------------------------------------------------------
+
+
+def load_config() -> dict:
+    """Load configuration from environment variables."""
+    token = os.environ.get("LISTENBRAINZ_TOKEN")
+    if not token:
+        sys.exit(
+            "Error: LISTENBRAINZ_TOKEN environment variable is required.\n"
+            "Export it before running: export LISTENBRAINZ_TOKEN='your-token-here'"
+        )
+
+    return {
+        "token": token,
+        "alsa_device": os.environ.get("ALSA_DEVICE", "hw:0,0"),
+        "sample_rate": int(os.environ.get("SAMPLE_RATE", "48000")),
+        "channels": int(os.environ.get("CHANNELS", "2")),
+        "sample_format": os.environ.get("SAMPLE_FORMAT", "S24_3LE"),
+        "silence_threshold": int(os.environ.get("SILENCE_THRESHOLD", "500")),
+        "silence_check_seconds": 1,
+        "sustained_audio_checks": int(os.environ.get("SUSTAINED_AUDIO_CHECKS", "3")),
+        "rms_stride": int(os.environ.get("RMS_STRIDE", "16")),
+        "recognize_durations": [20, 30, 45],
+        "recognition_cooldown": int(os.environ.get("RECOGNITION_COOLDOWN", "10")),
+        "failure_backoff_base": int(os.environ.get("FAILURE_BACKOFF_BASE", "30")),
+        "failure_backoff_max": int(os.environ.get("FAILURE_BACKOFF_MAX", "300")),
+        "log_level": os.environ.get("LOG_LEVEL", "INFO"),
+    }
 
 
 def main_loop():
     """Main scrobbler loop with backoff and cleanup."""
+    cfg = load_config()
+
+    logging.basicConfig(
+        level=getattr(logging, cfg["log_level"]),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Import SongRec at runtime — only available on the Pi
+    songrec_dir = os.path.expanduser("~/songrec-python/fingerprinting")
+    sys.path.insert(0, songrec_dir)
+    from algorithm import SignatureGenerator
+    from communication import recognize_song_from_signature
+
+    state = ScrobbleState(
+        failure_backoff_base=cfg["failure_backoff_base"],
+        failure_backoff_max=cfg["failure_backoff_max"],
+    )
+
+    audio_kwargs = {
+        "alsa_device": cfg["alsa_device"],
+        "sample_format": cfg["sample_format"],
+        "sample_rate": cfg["sample_rate"],
+        "channels": cfg["channels"],
+    }
+
     log.info("Vinyl Scrobbler v1.0 (SongRec engine)")
-    log.info("ALSA device: %s", ALSA_DEVICE)
-    log.info("Silence threshold: %d", SILENCE_THRESHOLD)
-    log.info("Sustained audio checks: %d", SUSTAINED_AUDIO_CHECKS)
+    log.info("ALSA device: %s", cfg["alsa_device"])
+    log.info("Silence threshold: %d", cfg["silence_threshold"])
+    log.info("Sustained audio checks: %d", cfg["sustained_audio_checks"])
     log.info("RMS stride: %d (~%d samples checked per second of audio)",
-             RMS_STRIDE, (SAMPLE_RATE * CHANNELS) // RMS_STRIDE)
+             cfg["rms_stride"],
+             (cfg["sample_rate"] * cfg["channels"]) // cfg["rms_stride"])
     log.info(
         "Recognition durations: %s seconds",
-        "/".join(str(d) for d in RECOGNIZE_DURATIONS),
+        "/".join(str(d) for d in cfg["recognize_durations"]),
     )
-    log.info("Recognition cooldown: %ds", RECOGNITION_COOLDOWN)
+    log.info("Recognition cooldown: %ds", cfg["recognition_cooldown"])
     log.info(
-        "Audio format: %dHz, %dch, %s", SAMPLE_RATE, CHANNELS, SAMPLE_FORMAT
+        "Audio format: %dHz, %dch, %s",
+        cfg["sample_rate"], cfg["channels"], cfg["sample_format"],
     )
 
     # Use a predictable temp path so we can always clean up
     tmp_file = os.path.join(tempfile.gettempdir(), "vinyl_capture.wav")
+
+    def _record(duration, filepath):
+        return record_audio(duration, filepath, **audio_kwargs)
+
+    def _recognize(filepath):
+        return recognize_track(
+            filepath,
+            SignatureGenerator=SignatureGenerator,
+            recognize_song_from_signature=recognize_song_from_signature,
+        )
 
     try:
         while True:
@@ -455,19 +460,30 @@ def main_loop():
                     )
                     time.sleep(backoff)
 
-                wait_for_audio()
+                wait_for_audio(
+                    silence_threshold=cfg["silence_threshold"],
+                    silence_check_seconds=cfg["silence_check_seconds"],
+                    sustained_audio_checks=cfg["sustained_audio_checks"],
+                    rms_stride=cfg["rms_stride"],
+                    **audio_kwargs,
+                )
 
-                match = attempt_recognition(tmp_file)
+                match = attempt_recognition(
+                    tmp_file,
+                    record_durations=cfg["recognize_durations"],
+                    record_fn=_record,
+                    recognize_fn=_recognize,
+                )
 
                 if match:
-                    submit_to_listenbrainz(match)
+                    submit_to_listenbrainz(match, token=cfg["token"], state=state)
                     state.consecutive_failures = 0
                 else:
                     state.record_failure()
 
                 # Cooldown between recognition cycles to rate-limit Shazam calls
-                log.debug("Cooldown: %ds before next cycle", RECOGNITION_COOLDOWN)
-                time.sleep(RECOGNITION_COOLDOWN)
+                log.debug("Cooldown: %ds before next cycle", cfg["recognition_cooldown"])
+                time.sleep(cfg["recognition_cooldown"])
 
             except KeyboardInterrupt:
                 raise
