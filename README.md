@@ -9,7 +9,7 @@ Designed to run continuously on a Raspberry Pi with a USB microphone positioned 
 1. Listens for sustained audio above a silence threshold
 2. Records a sample and fingerprints it against Shazam's database
 3. Submits the identified track to ListenBrainz as a listen
-4. Deduplicates consecutive plays and backs off after failed recognitions
+4. Deduplicates consecutive plays of the same track
 
 ## Setup
 
@@ -44,8 +44,6 @@ python scrobbler.py
 | `SUSTAINED_AUDIO_CHECKS` | No | `3` | Consecutive above-threshold checks before recognition triggers |
 | `RMS_STRIDE` | No | `16` | Sample stride for RMS calculation (higher = faster, less precise) |
 | `RECOGNITION_COOLDOWN` | No | `10` | Seconds between recognition cycles |
-| `FAILURE_BACKOFF_BASE` | No | `30` | Base backoff seconds after failed recognition |
-| `FAILURE_BACKOFF_MAX` | No | `300` | Maximum backoff cap in seconds |
 | `LOG_LEVEL` | No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## Requirements

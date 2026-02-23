@@ -85,7 +85,6 @@ class TestScrobbleState:
         state = ScrobbleState()
         assert state.artist is None
         assert state.track is None
-        assert state.consecutive_failures == 0
 
     def test_is_duplicate_false_when_empty(self):
         state = ScrobbleState()
@@ -116,59 +115,6 @@ class TestScrobbleState:
         assert state.track == "Track"
         assert before <= state.scrobbled_at <= after
 
-    def test_record_scrobble_resets_failures(self):
-        state = ScrobbleState()
-        state.consecutive_failures = 5
-        state.record_scrobble("Artist", "Track")
-        assert state.consecutive_failures == 0
-
-    def test_record_failure_increments(self):
-        state = ScrobbleState()
-        state.record_failure()
-        assert state.consecutive_failures == 1
-        state.record_failure()
-        assert state.consecutive_failures == 2
-
-    def test_backoff_zero_when_no_failures(self):
-        state = ScrobbleState(failure_backoff_base=30, failure_backoff_max=300)
-        assert state.backoff_seconds() == 0
-
-    def test_backoff_exponential(self):
-        state = ScrobbleState(failure_backoff_base=30, failure_backoff_max=300)
-
-        state.record_failure()  # 1 failure
-        assert state.backoff_seconds() == 30  # 30 * 2^0
-
-        state.record_failure()  # 2 failures
-        assert state.backoff_seconds() == 60  # 30 * 2^1
-
-        state.record_failure()  # 3 failures
-        assert state.backoff_seconds() == 120  # 30 * 2^2
-
-        state.record_failure()  # 4 failures
-        assert state.backoff_seconds() == 240  # 30 * 2^3
-
-    def test_backoff_capped_at_max(self):
-        state = ScrobbleState(failure_backoff_base=30, failure_backoff_max=300)
-
-        state.record_failure()  # 1
-        state.record_failure()  # 2
-        state.record_failure()  # 3
-        state.record_failure()  # 4
-        state.record_failure()  # 5: 30 * 2^4 = 480, capped to 300
-        assert state.backoff_seconds() == 300
-
-    def test_backoff_custom_base_and_max(self):
-        state = ScrobbleState(failure_backoff_base=10, failure_backoff_max=50)
-        state.record_failure()
-        assert state.backoff_seconds() == 10
-        state.record_failure()
-        assert state.backoff_seconds() == 20
-        state.record_failure()
-        assert state.backoff_seconds() == 40
-        state.record_failure()
-        assert state.backoff_seconds() == 50  # capped
-
 
 # ---------------------------------------------------------------------------
 # submit_to_listenbrainz
@@ -190,7 +136,6 @@ class TestSubmitToListenbrainz:
         assert result is True
         assert state.artist == "Songs: Ohia"
         assert state.track == "The Old Black Hen"
-        assert state.consecutive_failures == 0
 
         # Verify the API call
         call_kwargs = mock_post.call_args
@@ -510,8 +455,6 @@ class TestLoadConfig:
         assert cfg["rms_stride"] == 16
         assert cfg["recognize_durations"] == [20, 30, 45]
         assert cfg["recognition_cooldown"] == 10
-        assert cfg["failure_backoff_base"] == 30
-        assert cfg["failure_backoff_max"] == 300
         assert cfg["log_level"] == "INFO"
 
     def test_custom_env_vars(self):
@@ -525,8 +468,6 @@ class TestLoadConfig:
             "SUSTAINED_AUDIO_CHECKS": "5",
             "RMS_STRIDE": "8",
             "RECOGNITION_COOLDOWN": "20",
-            "FAILURE_BACKOFF_BASE": "15",
-            "FAILURE_BACKOFF_MAX": "120",
             "LOG_LEVEL": "DEBUG",
         }
         with patch.dict(os.environ, env, clear=True):
@@ -541,6 +482,4 @@ class TestLoadConfig:
         assert cfg["sustained_audio_checks"] == 5
         assert cfg["rms_stride"] == 8
         assert cfg["recognition_cooldown"] == 20
-        assert cfg["failure_backoff_base"] == 15
-        assert cfg["failure_backoff_max"] == 120
         assert cfg["log_level"] == "DEBUG"

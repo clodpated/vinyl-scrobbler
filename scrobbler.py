@@ -28,14 +28,11 @@ log = logging.getLogger("vinyl-scrobbler")
 
 @dataclass
 class ScrobbleState:
-    """Tracks the last scrobbled track and failure backoff."""
+    """Tracks the last scrobbled track to deduplicate consecutive plays."""
 
     artist: Optional[str] = None
     track: Optional[str] = None
     scrobbled_at: float = 0.0
-    consecutive_failures: int = 0
-    failure_backoff_base: int = 30
-    failure_backoff_max: int = 300
 
     def is_duplicate(self, artist: str, track: str) -> bool:
         return self.artist == artist and self.track == track
@@ -44,17 +41,6 @@ class ScrobbleState:
         self.artist = artist
         self.track = track
         self.scrobbled_at = time.time()
-        self.consecutive_failures = 0
-
-    def record_failure(self) -> None:
-        self.consecutive_failures += 1
-
-    def backoff_seconds(self) -> int:
-        """Exponential backoff capped at failure_backoff_max."""
-        if self.consecutive_failures == 0:
-            return 0
-        delay = self.failure_backoff_base * (2 ** (self.consecutive_failures - 1))
-        return min(delay, self.failure_backoff_max)
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +370,6 @@ def load_config() -> dict:
         "rms_stride": int(os.environ.get("RMS_STRIDE", "16")),
         "recognize_durations": [20, 30, 45],
         "recognition_cooldown": int(os.environ.get("RECOGNITION_COOLDOWN", "10")),
-        "failure_backoff_base": int(os.environ.get("FAILURE_BACKOFF_BASE", "30")),
-        "failure_backoff_max": int(os.environ.get("FAILURE_BACKOFF_MAX", "300")),
         "log_level": os.environ.get("LOG_LEVEL", "INFO"),
     }
 
@@ -406,10 +390,7 @@ def main_loop():
     from algorithm import SignatureGenerator
     from communication import recognize_song_from_signature
 
-    state = ScrobbleState(
-        failure_backoff_base=cfg["failure_backoff_base"],
-        failure_backoff_max=cfg["failure_backoff_max"],
-    )
+    state = ScrobbleState()
 
     audio_kwargs = {
         "alsa_device": cfg["alsa_device"],
@@ -451,16 +432,6 @@ def main_loop():
     try:
         while True:
             try:
-                # Apply backoff if we've had consecutive failures
-                backoff = state.backoff_seconds()
-                if backoff > 0:
-                    log.info(
-                        "Backing off %ds after %d consecutive failure(s)",
-                        backoff,
-                        state.consecutive_failures,
-                    )
-                    time.sleep(backoff)
-
                 wait_for_audio(
                     silence_threshold=cfg["silence_threshold"],
                     silence_check_seconds=cfg["silence_check_seconds"],
@@ -478,9 +449,6 @@ def main_loop():
 
                 if match:
                     submit_to_listenbrainz(match, token=cfg["token"], state=state)
-                    state.consecutive_failures = 0
-                else:
-                    state.record_failure()
 
                 # Cooldown between recognition cycles to rate-limit Shazam calls
                 log.debug("Cooldown: %ds before next cycle", cfg["recognition_cooldown"])
