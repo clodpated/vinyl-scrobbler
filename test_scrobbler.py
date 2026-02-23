@@ -15,6 +15,8 @@ from scrobbler import (
     attempt_recognition,
     cleanup_temp_file,
     load_config,
+    load_blocklist,
+    is_blocked,
 )
 
 
@@ -205,6 +207,112 @@ class TestSubmitToListenbrainz:
 
         assert result is True
         assert state.artist == "Artist"
+
+    def test_blocked_track_rejected(self):
+        state = ScrobbleState()
+        blocklist = {("tim maia", "ela partiu")}
+
+        with patch("scrobbler.requests.post") as mock_post:
+            result = submit_to_listenbrainz(
+                {"artist": "Tim Maia", "track": "Ela Partiu"},
+                token="test-token",
+                state=state,
+                blocklist=blocklist,
+            )
+
+        assert result is False
+        mock_post.assert_not_called()
+        assert state.artist is None  # Not recorded
+
+    def test_blocklist_checked_before_duplicate(self):
+        """Blocklist takes priority over duplicate check."""
+        state = ScrobbleState()
+        state.record_scrobble("Tim Maia", "Ela Partiu")
+        blocklist = {("tim maia", "ela partiu")}
+
+        with patch("scrobbler.requests.post") as mock_post:
+            result = submit_to_listenbrainz(
+                {"artist": "Tim Maia", "track": "Ela Partiu"},
+                token="test-token",
+                state=state,
+                blocklist=blocklist,
+            )
+
+        assert result is False
+        mock_post.assert_not_called()
+
+    def test_empty_blocklist_allows_scrobble(self):
+        state = ScrobbleState()
+        mock_resp = Mock(status_code=200)
+
+        with patch("scrobbler.requests.post", return_value=mock_resp):
+            result = submit_to_listenbrainz(
+                {"artist": "Mineral", "track": "LoveLetterTypewriter"},
+                token="test-token",
+                state=state,
+                blocklist=set(),
+            )
+
+        assert result is True
+
+    def test_none_blocklist_allows_scrobble(self):
+        state = ScrobbleState()
+        mock_resp = Mock(status_code=200)
+
+        with patch("scrobbler.requests.post", return_value=mock_resp):
+            result = submit_to_listenbrainz(
+                {"artist": "Mineral", "track": "LoveLetterTypewriter"},
+                token="test-token",
+                state=state,
+                blocklist=None,
+            )
+
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# load_blocklist / is_blocked
+# ---------------------------------------------------------------------------
+
+
+class TestBlocklist:
+    def test_load_from_file(self, tmp_path):
+        f = tmp_path / "blocklist.txt"
+        f.write_text("Tim Maia\tEla Partiu\nCitySound\tThe Open Road\n")
+        result = load_blocklist(str(f))
+        assert len(result) == 2
+        assert ("tim maia", "ela partiu") in result
+        assert ("citysound", "the open road") in result
+
+    def test_load_ignores_comments_and_blanks(self, tmp_path):
+        f = tmp_path / "blocklist.txt"
+        f.write_text("# This is a comment\n\nTim Maia\tEla Partiu\n\n# Another\n")
+        result = load_blocklist(str(f))
+        assert len(result) == 1
+
+    def test_load_ignores_malformed_lines(self, tmp_path):
+        f = tmp_path / "blocklist.txt"
+        f.write_text("No tab here\nTim Maia\tEla Partiu\n")
+        result = load_blocklist(str(f))
+        assert len(result) == 1
+        assert ("tim maia", "ela partiu") in result
+
+    def test_load_missing_file(self):
+        result = load_blocklist("/nonexistent/blocklist.txt")
+        assert result == set()
+
+    def test_is_blocked_case_insensitive(self):
+        blocklist = {("tim maia", "ela partiu")}
+        assert is_blocked("TIM MAIA", "ELA PARTIU", blocklist)
+        assert is_blocked("Tim Maia", "Ela Partiu", blocklist)
+        assert is_blocked("tim maia", "ela partiu", blocklist)
+
+    def test_is_blocked_false_for_unlisted(self):
+        blocklist = {("tim maia", "ela partiu")}
+        assert not is_blocked("Mineral", "LoveLetterTypewriter", blocklist)
+
+    def test_is_blocked_empty_blocklist(self):
+        assert not is_blocked("Anything", "Goes", set())
 
 
 # ---------------------------------------------------------------------------

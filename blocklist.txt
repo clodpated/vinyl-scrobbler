@@ -1,0 +1,7 @@
+# Phantom scrobbles — tracks Shazam falsely matches from ambient/vinyl noise.
+# Format: artist<TAB>track (case-insensitive matching)
+# Add new entries as they appear.
+Tim Maia	Ela Partiu
+Sicily & Mario Scalambrin	Tribal Tango (Scalambrin & Sicily Mix)
+CitySound	The Open Road
+Drippin So Pretty	Another Cup

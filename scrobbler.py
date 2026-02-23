@@ -44,6 +44,38 @@ class ScrobbleState:
 
 
 # ---------------------------------------------------------------------------
+# Blocklist
+# ---------------------------------------------------------------------------
+
+
+def load_blocklist(path: str) -> set:
+    """
+    Load blocked artist/track pairs from a text file.
+
+    Each line should be: artist\ttrack
+    Lines starting with # and blank lines are ignored.
+    Returns a set of (artist_lower, track_lower) tuples.
+    """
+    blocked = set()
+    if not os.path.exists(path):
+        return blocked
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                blocked.add((parts[0].strip().lower(), parts[1].strip().lower()))
+    return blocked
+
+
+def is_blocked(artist: str, track: str, blocklist: set) -> bool:
+    """Check if an artist/track pair is in the blocklist."""
+    return (artist.lower(), track.lower()) in blocklist
+
+
+# ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
 
@@ -236,10 +268,15 @@ def recognize_track(filepath: str, *, SignatureGenerator, recognize_song_from_si
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org/1/submit-listens"
 
 
-def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState) -> bool:
+def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState,
+                           blocklist: set | None = None) -> bool:
     """Submit a listen to ListenBrainz with retry."""
     artist = match["artist"]
     track = match["track"]
+
+    if blocklist and is_blocked(artist, track, blocklist):
+        log.info("Blocked phantom: %s - %s", artist, track)
+        return False
 
     if state.is_duplicate(artist, track):
         log.info("Skipping duplicate: %s - %s", artist, track)
@@ -392,6 +429,14 @@ def main_loop():
 
     state = ScrobbleState()
 
+    blocklist_path = os.environ.get(
+        "BLOCKLIST_FILE",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocklist.txt"),
+    )
+    blocklist = load_blocklist(blocklist_path)
+    if blocklist:
+        log.info("Blocklist loaded: %d entries from %s", len(blocklist), blocklist_path)
+
     audio_kwargs = {
         "alsa_device": cfg["alsa_device"],
         "sample_format": cfg["sample_format"],
@@ -448,7 +493,8 @@ def main_loop():
                 )
 
                 if match:
-                    submit_to_listenbrainz(match, token=cfg["token"], state=state)
+                    submit_to_listenbrainz(match, token=cfg["token"], state=state,
+                                           blocklist=blocklist)
 
                 # Cooldown between recognition cycles to rate-limit Shazam calls
                 log.debug("Cooldown: %ds before next cycle", cfg["recognition_cooldown"])

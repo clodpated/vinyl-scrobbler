@@ -14,6 +14,7 @@ Uses the same RMS calculation as scrobbler.py so values are directly comparable.
 import subprocess
 import sys
 import os
+import tempfile
 import time
 
 
@@ -47,20 +48,20 @@ def main():
     sample_rate = int(os.environ.get("SAMPLE_RATE", "48000"))
     channels = int(os.environ.get("CHANNELS", "2"))
     threshold = int(os.environ.get("SILENCE_THRESHOLD", "300000"))
+    tmpfile = os.path.join(tempfile.gettempdir(), "rms_profile_capture.raw")
 
     print(f"RMS Profiler — sampling for {duration}s")
     print(f"Device: {alsa_device} | Format: {sample_format} | Rate: {sample_rate} | Channels: {channels}")
     print(f"Current threshold: {threshold:,}")
     print(f"{'─' * 78}")
     print(f"{'Time':>6}  {'RMS':>10}  {'Bar':<50}  Status")
-    print(f"{'─' * 78}")
+    print(f"{'─' * 78}", flush=True)
 
     readings = []
-    start = time.time()
 
     for sec in range(duration):
         try:
-            proc = subprocess.Popen(
+            rc = subprocess.run(
                 [
                     "arecord",
                     "-D", alsa_device,
@@ -69,14 +70,17 @@ def main():
                     "-c", str(channels),
                     "-t", "raw",
                     "-d", "1",
+                    tmpfile,
                 ],
-                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-            )
-            data = proc.stdout.read()
-            proc.wait()
+                timeout=5,
+            ).returncode
 
-            if data:
+            if os.path.exists(tmpfile) and os.path.getsize(tmpfile) > 0:
+                with open(tmpfile, "rb") as f:
+                    data = f.read()
+                os.remove(tmpfile)
+
                 rms = rms_of_raw_24bit(data)
                 readings.append(rms)
 
@@ -86,15 +90,22 @@ def main():
                     status = "  silent"
 
                 elapsed = sec + 1
-                print(f"{elapsed:>5}s  {rms:>10,.0f}  {bar(rms)}  {status}")
+                print(f"{elapsed:>5}s  {rms:>10,.0f}  {bar(rms)}  {status}", flush=True)
             else:
-                print(f"{sec+1:>5}s  {'NO DATA':>10}")
+                print(f"{sec+1:>5}s  {'NO DATA':>10}", flush=True)
 
         except KeyboardInterrupt:
             print("\n\nStopped early.")
             break
+        except subprocess.TimeoutExpired:
+            subprocess.run(["pkill", "-f", "arecord"], stderr=subprocess.DEVNULL)
+            print(f"{sec+1:>5}s  {'TIMEOUT':>10}", flush=True)
         except Exception as e:
-            print(f"{sec+1:>5}s  ERROR: {e}")
+            print(f"{sec+1:>5}s  ERROR: {e}", flush=True)
+
+    # Clean up temp file
+    if os.path.exists(tmpfile):
+        os.remove(tmpfile)
 
     print(f"{'─' * 78}")
 
