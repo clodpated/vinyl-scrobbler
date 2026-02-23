@@ -5,6 +5,7 @@ Vinyl Scrobbler — Silence-aware audio recognition and ListenBrainz scrobbling.
 Listens via USB microphone, identifies tracks using SongRec's fingerprinting
 (which talks to Shazam's servers), and submits listens to ListenBrainz.
 """
+from __future__ import annotations
 
 import subprocess
 import time
