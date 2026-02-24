@@ -175,7 +175,7 @@ def wait_for_audio(*, alsa_device, sample_format, sample_rate, channels,
 def record_audio(duration: int, filepath: str, *, alsa_device, sample_format,
                  sample_rate, channels) -> bool:
     """Record audio to a WAV file. Returns True on success."""
-    log.info("Recording %ds of audio to %s", duration, filepath)
+    log.debug("Recording %ds of audio to %s", duration, filepath)
     try:
         result = subprocess.run(
             [
@@ -279,7 +279,7 @@ def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState,
         return False
 
     if state.is_duplicate(artist, track):
-        log.info("Skipping duplicate: %s - %s", artist, track)
+        log.debug("Skipping duplicate: %s - %s", artist, track)
         return False
 
     payload = {
@@ -343,11 +343,8 @@ def attempt_recognition(tmp_file: str, *, record_durations, record_fn,
     Cleans up the temp file between attempts.
     """
     for i, duration in enumerate(record_durations):
-        attempt = i + 1
-        total = len(record_durations)
-
         if not record_fn(duration, tmp_file):
-            log.warning("Recording failed on attempt %d/%d", attempt, total)
+            log.debug("Recording failed at %ds", duration)
             cleanup_temp_file(tmp_file)
             time.sleep(2)
             continue
@@ -356,28 +353,11 @@ def attempt_recognition(tmp_file: str, *, record_durations, record_fn,
         cleanup_temp_file(tmp_file)
 
         if match:
-            if attempt > 1:
-                log.info(
-                    "Matched on attempt %d/%d (%ds sample)",
-                    attempt, total, duration,
-                )
             return match
 
-        if attempt < total:
-            log.info(
-                "No match at %ds, trying %ds (attempt %d/%d)",
-                duration,
-                record_durations[i + 1],
-                attempt,
-                total,
-            )
-        else:
-            log.info(
-                "No match after all %d attempts (tried %s second samples)",
-                total,
-                "/".join(str(d) for d in record_durations),
-            )
+        log.debug("No match at %ds", duration)
 
+    log.info("No match (%s)", "/".join(f"{d}s" for d in record_durations))
     return None
 
 
@@ -405,7 +385,7 @@ def load_config() -> dict:
         "silence_check_seconds": 1,
         "sustained_audio_checks": int(os.environ.get("SUSTAINED_AUDIO_CHECKS", "3")),
         "rms_stride": int(os.environ.get("RMS_STRIDE", "16")),
-        "recognize_durations": [20, 30, 45],
+        "recognize_durations": [20, 40],
         "recognition_cooldown": int(os.environ.get("RECOGNITION_COOLDOWN", "10")),
         "log_level": os.environ.get("LOG_LEVEL", "INFO"),
     }

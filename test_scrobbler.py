@@ -442,7 +442,7 @@ class TestAttemptRecognition:
 
         result = attempt_recognition(
             tmp_file,
-            record_durations=[20, 30, 45],
+            record_durations=[20, 40],
             record_fn=record_fn,
             recognize_fn=recognize_fn,
         )
@@ -451,24 +451,22 @@ class TestAttemptRecognition:
         record_fn.assert_called_once_with(20, tmp_file)
         recognize_fn.assert_called_once_with(tmp_file)
 
-    def test_match_on_third_try(self, tmp_path):
+    def test_match_on_second_try(self, tmp_path):
         tmp_file = str(tmp_path / "capture.wav")
         record_fn = MagicMock(return_value=True)
-        recognize_fn = MagicMock(side_effect=[None, None, {"artist": "A", "track": "T"}])
+        recognize_fn = MagicMock(side_effect=[None, {"artist": "A", "track": "T"}])
 
         result = attempt_recognition(
             tmp_file,
-            record_durations=[20, 30, 45],
+            record_durations=[20, 40],
             record_fn=record_fn,
             recognize_fn=recognize_fn,
         )
 
         assert result == {"artist": "A", "track": "T"}
-        assert record_fn.call_count == 3
-        # Verify durations escalated
+        assert record_fn.call_count == 2
         assert record_fn.call_args_list[0][0][0] == 20
-        assert record_fn.call_args_list[1][0][0] == 30
-        assert record_fn.call_args_list[2][0][0] == 45
+        assert record_fn.call_args_list[1][0][0] == 40
 
     def test_no_match_after_all_tiers(self, tmp_path):
         tmp_file = str(tmp_path / "capture.wav")
@@ -477,14 +475,14 @@ class TestAttemptRecognition:
 
         result = attempt_recognition(
             tmp_file,
-            record_durations=[20, 30, 45],
+            record_durations=[20, 40],
             record_fn=record_fn,
             recognize_fn=recognize_fn,
         )
 
         assert result is None
-        assert record_fn.call_count == 3
-        assert recognize_fn.call_count == 3
+        assert record_fn.call_count == 2
+        assert recognize_fn.call_count == 2
 
     def test_recording_failure_skips_to_next_tier(self, tmp_path):
         tmp_file = str(tmp_path / "capture.wav")
@@ -494,13 +492,12 @@ class TestAttemptRecognition:
         with patch("scrobbler.time.sleep"):
             result = attempt_recognition(
                 tmp_file,
-                record_durations=[20, 30],
+                record_durations=[20, 40],
                 record_fn=record_fn,
                 recognize_fn=recognize_fn,
             )
 
         assert result == {"artist": "A", "track": "T"}
-        # recognize_fn only called once (skipped failed recording)
         recognize_fn.assert_called_once()
 
     def test_all_recordings_fail(self, tmp_path):
@@ -511,7 +508,7 @@ class TestAttemptRecognition:
         with patch("scrobbler.time.sleep"):
             result = attempt_recognition(
                 tmp_file,
-                record_durations=[20, 30, 45],
+                record_durations=[20, 40],
                 record_fn=record_fn,
                 recognize_fn=recognize_fn,
             )
@@ -561,7 +558,7 @@ class TestLoadConfig:
         assert cfg["silence_threshold"] == 500
         assert cfg["sustained_audio_checks"] == 3
         assert cfg["rms_stride"] == 16
-        assert cfg["recognize_durations"] == [20, 30, 45]
+        assert cfg["recognize_durations"] == [20, 40]
         assert cfg["recognition_cooldown"] == 10
         assert cfg["log_level"] == "INFO"
 
