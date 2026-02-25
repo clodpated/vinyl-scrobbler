@@ -118,7 +118,7 @@ def wait_for_audio(*, alsa_device, sample_format, sample_rate, channels,
     Requires sustained_audio_checks consecutive above-threshold readings
     to trigger, reducing false positives from transient sounds.
     """
-    log.info("Listening for audio...")
+    log.debug("Listening for audio...")
     consecutive_hits = 0
 
     while True:
@@ -153,7 +153,7 @@ def wait_for_audio(*, alsa_device, sample_format, sample_rate, channels,
                         sustained_audio_checks,
                     )
                     if consecutive_hits >= sustained_audio_checks:
-                        log.info(
+                        log.debug(
                             "Sustained audio detected (RMS: %.0f, %d consecutive checks)",
                             rms,
                             consecutive_hits,
@@ -248,7 +248,7 @@ def recognize_track(filepath: str, *, SignatureGenerator, recognize_song_from_si
                 track = result.get("track", {})
                 artist = track.get("subtitle", "Unknown Artist")
                 title = track.get("title", "Unknown Track")
-                log.info("Match: %s - %s", artist, title)
+                log.debug("Match: %s - %s", artist, title)
                 return {"artist": artist, "track": title}
 
             # Try next chunk
