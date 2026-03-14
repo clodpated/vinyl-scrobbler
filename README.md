@@ -48,6 +48,55 @@ python scrobbler.py
 | `BLOCKLIST_FILE` | No | `blocklist.txt` | Path to phantom track blocklist |
 | `LOG_LEVEL` | No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
+## Blocklist
+
+Shazam occasionally matches ambient noise or vinyl artifacts to unrelated tracks ("phantoms"). The blocklist prevents these from being scrobbled.
+
+`blocklist.txt` is a tab-separated file with one entry per line:
+
+```
+artist<TAB>track
+```
+
+Matching is case-insensitive. Lines starting with `#` are comments.
+
+### Managing phantoms manually
+
+1. **Identify** — check your [ListenBrainz profile](https://listenbrainz.org/user/clodpated/) for tracks you didn't play
+2. **Add to blocklist** — append a new line to `blocklist.txt` with the artist and track separated by a tab
+3. **Delete from ListenBrainz** — use the API to remove the scrobble:
+   ```bash
+   curl -X POST "https://api.listenbrainz.org/1/delete-listen" \
+     -H "Authorization: Token $LISTENBRAINZ_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"listened_at": <unix_timestamp>, "recording_msid": "<msid>"}'
+   ```
+   You can find `listened_at` and `recording_msid` via the listens API:
+   ```bash
+   curl -s "https://api.listenbrainz.org/1/user/<username>/listens?count=100" \
+     -H "Authorization: Token $LISTENBRAINZ_TOKEN"
+   ```
+4. **Deploy** — copy the updated blocklist to the Pi and restart the service:
+   ```bash
+   scp blocklist.txt scrobblepi@scrobblepi.local:~/vinyl-scrobbler/blocklist.txt
+   ssh scrobblepi@scrobblepi.local "sudo systemctl restart vinyl-scrobbler"
+   ```
+
+### Automated phantom sweep (Claude Code)
+
+A scheduled task (`weekly-phantom-sweep`) runs every Saturday at 10am to detect phantoms automatically. It:
+
+1. Fetches the past week of scrobbles from ListenBrainz
+2. Groups them into listening sessions (20-minute gap threshold)
+3. Flags isolated one-off tracks surrounded by a different dominant artist — these are likely Shazam false positives
+4. Presents suspects for review, categorized as:
+   - **Shazam noise** — completely unrelated artists (e.g., spa music in a rock session)
+   - **Sample matches** — Shazam matching a sampled song (e.g., a funk track in a hip-hop session)
+   - **Credit variants** — same artist with different featuring credits (usually false positives)
+5. After confirmation, deletes from ListenBrainz, adds to blocklist, syncs to Pi, restarts the service, and pushes to GitHub
+
+The task is managed in Claude Code under Scheduled > `weekly-phantom-sweep`.
+
 ## Requirements
 
 - Python 3.10+
