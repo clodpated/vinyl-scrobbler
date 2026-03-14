@@ -4,6 +4,10 @@ Identifies vinyl records playing on a turntable using Shazam audio fingerprintin
 
 Designed to run continuously on a Raspberry Pi with a USB microphone positioned near the speakers.
 
+### Why a microphone instead of line-in?
+
+A direct line from the preamp/receiver would seem like the obvious choice, but Shazam's fingerprinting API expects audio that has traveled through air and been captured by a microphone. Direct line-in recordings never produced reliable matches — the signal is too clean and doesn't match the acoustic profile Shazam's algorithm is trained on. A USB mic near the speakers gives consistent, accurate results.
+
 ## How it works
 
 1. Listens for sustained audio above a silence threshold
