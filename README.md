@@ -99,7 +99,7 @@ A scheduled task (`weekly-phantom-sweep`) runs every Saturday at 10am to detect 
    - **Credit variants** — same artist with different featuring credits (usually false positives)
 5. After confirmation, deletes from ListenBrainz, adds to blocklist, syncs to Pi, restarts the service, and pushes to GitHub
 
-The task is managed in Claude Code under Scheduled > `weekly-phantom-sweep`.
+The task is managed in Claude Code under Scheduled > `weekly-phantom-sweep`. Requires a [Claude Code](https://claude.ai/claude-code) subscription with scheduled tasks enabled.
 
 ## Requirements
 
