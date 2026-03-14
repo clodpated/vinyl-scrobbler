@@ -41,6 +41,8 @@ python scrobbler.py
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `LISTENBRAINZ_TOKEN` | Yes | — | Your ListenBrainz API token |
+| `LISTENBRAINZ_USER` | No | — | Your ListenBrainz username (for phantom sweep) |
+| `PI_SSH` | No | `scrobblepi@scrobblepi.local` | SSH target for deploying to the Pi |
 | `ALSA_DEVICE` | No | `hw:0,0` | ALSA capture device (`arecord -l` to list) |
 | `SAMPLE_RATE` | No | `48000` | Mic sample rate in Hz (`arecord --dump-hw-params` to check) |
 | `CHANNELS` | No | `2` | Number of audio channels (1 = mono, 2 = stereo) |
@@ -66,7 +68,7 @@ Matching is case-insensitive. Lines starting with `#` are comments.
 
 ### Managing phantoms manually
 
-1. **Identify** — check your [ListenBrainz profile](https://listenbrainz.org/user/clodpated/) for tracks you didn't play
+1. **Identify** — check your ListenBrainz profile (`https://listenbrainz.org/user/$LISTENBRAINZ_USER/`) for tracks you didn't play
 2. **Add to blocklist** — append a new line to `blocklist.txt` with the artist and track separated by a tab
 3. **Delete from ListenBrainz** — use the API to remove the scrobble:
    ```bash
@@ -77,13 +79,13 @@ Matching is case-insensitive. Lines starting with `#` are comments.
    ```
    You can find `listened_at` and `recording_msid` via the listens API:
    ```bash
-   curl -s "https://api.listenbrainz.org/1/user/<username>/listens?count=100" \
+   curl -s "https://api.listenbrainz.org/1/user/$LISTENBRAINZ_USER/listens?count=100" \
      -H "Authorization: Token $LISTENBRAINZ_TOKEN"
    ```
 4. **Deploy** — copy the updated blocklist to the Pi and restart the service:
    ```bash
-   scp blocklist.txt scrobblepi@scrobblepi.local:~/vinyl-scrobbler/blocklist.txt
-   ssh scrobblepi@scrobblepi.local "sudo systemctl restart vinyl-scrobbler"
+   scp blocklist.txt $PI_SSH:~/vinyl-scrobbler/blocklist.txt
+   ssh $PI_SSH "sudo systemctl restart vinyl-scrobbler"
    ```
 
 ### Automated phantom sweep (Claude Code)

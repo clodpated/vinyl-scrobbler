@@ -164,7 +164,7 @@ def wait_for_audio(*, alsa_device, sample_format, sample_rate, channels,
                         log.debug("Audio dropped below threshold, resetting")
                     consecutive_hits = 0
 
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError) as e:
             log.error("Error in silence detection: %s", e)
             consecutive_hits = 0
             time.sleep(1)
@@ -194,7 +194,7 @@ def record_audio(duration: int, filepath: str, *, alsa_device, sample_format,
     except subprocess.TimeoutExpired:
         log.warning("Recording timed out")
         return False
-    except Exception as e:
+    except OSError as e:
         log.error("Recording error: %s", e)
         return False
 
@@ -255,8 +255,11 @@ def recognize_track(filepath: str, *, SignatureGenerator, recognize_song_from_si
             processed_seconds = sig_gen.samples_processed / 16000
             log.debug("No match at %.0fs, trying next chunk...", processed_seconds)
 
-    except Exception as e:
+    except (FileNotFoundError, OSError, ValueError) as e:
         log.error("Recognition error: %s", e)
+        return None
+    except Exception as e:
+        log.error("Unexpected recognition error (%s): %s", type(e).__name__, e)
         return None
 
 
