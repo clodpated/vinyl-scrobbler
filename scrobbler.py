@@ -11,6 +11,7 @@ import subprocess
 import time
 import logging
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -26,21 +27,65 @@ log = logging.getLogger("vinyl-scrobbler")
 # ---------------------------------------------------------------------------
 
 
+# Canonicalize recognized metadata so cosmetic variants of the same recording
+# collapse to one identity — used both for what we submit and for dedup. We only
+# strip remaster tags and localized artist names; mixes, demos and "(feat. ...)"
+# are left intact because those are genuinely distinct tracks.
+_REMASTER_RE = re.compile(
+    r"\s*[\(\[]\s*(?:\d{4}\s+)?(?:digitally\s+)?remaster(?:ed)?(?:\s*\d{4})?\s*[\)\]]"
+    r"|\s*-\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s*\d{4})?\s*$",
+    re.IGNORECASE,
+)
+# A parenthetical containing a non-ASCII character is a localized name, e.g.
+# "Pavement(人行道合唱团)" — drop it, but keep plain-ASCII parentheticals.
+_LOCALIZED_RE = re.compile(r"\s*[\(\[][^)\]]*[^\x00-\x7F][^)\]]*[\)\]]")
+
+
+def canonical_artist(artist: str) -> str:
+    return re.sub(r"\s{2,}", " ", _LOCALIZED_RE.sub("", artist)).strip()
+
+
+def canonical_track(track: str) -> str:
+    return re.sub(r"\s{2,}", " ", _REMASTER_RE.sub("", track)).strip()
+
+
+def dedup_key(artist: str, track: str) -> tuple:
+    return (canonical_artist(artist).lower(), canonical_track(track).lower())
+
+
 @dataclass
 class ScrobbleState:
-    """Tracks the last scrobbled track to deduplicate consecutive plays."""
+    """Suppress re-scrobbling the same track within a cooldown window.
+
+    A single vinyl play can be recognized across two capture windows, producing
+    a duplicate seconds-to-minutes apart; the recognizer can also flip between
+    metadata variants of one recording. We suppress a repeat of the same
+    ``dedup_key`` within ``cooldown`` seconds, while still allowing a genuine
+    later replay of the same side. ``artist``/``track``/``scrobbled_at`` retain
+    the last successful scrobble for inspection.
+    """
 
     artist: Optional[str] = None
     track: Optional[str] = None
     scrobbled_at: float = 0.0
+    cooldown: float = 480.0
+    recent: dict = field(default_factory=dict)  # dedup_key -> last scrobble epoch
 
-    def is_duplicate(self, artist: str, track: str) -> bool:
-        return self.artist == artist and self.track == track
+    def is_duplicate(self, artist: str, track: str, now: Optional[float] = None) -> bool:
+        now = time.time() if now is None else now
+        last = self.recent.get(dedup_key(artist, track))
+        return last is not None and (now - last) < self.cooldown
 
-    def record_scrobble(self, artist: str, track: str) -> None:
+    def record_scrobble(self, artist: str, track: str, now: Optional[float] = None) -> None:
+        now = time.time() if now is None else now
         self.artist = artist
         self.track = track
-        self.scrobbled_at = time.time()
+        self.scrobbled_at = now
+        self.recent[dedup_key(artist, track)] = now
+        # Keep the map bounded: drop keys older than the cooldown window.
+        cutoff = now - self.cooldown
+        for k in [k for k, t in self.recent.items() if t < cutoff]:
+            del self.recent[k]
 
 
 # ---------------------------------------------------------------------------
@@ -271,15 +316,21 @@ LISTENBRAINZ_API_URL = "https://api.listenbrainz.org/1/submit-listens"
 def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState,
                            blocklist: set | None = None) -> bool:
     """Submit a listen to ListenBrainz with retry."""
-    artist = match["artist"]
-    track = match["track"]
+    raw_artist = match["artist"]
+    raw_track = match["track"]
 
-    if blocklist and is_blocked(artist, track, blocklist):
-        log.info("Blocked phantom: %s - %s", artist, track)
+    # Blocklist entries were authored against the raw recognized strings, so
+    # match them before normalizing.
+    if blocklist and is_blocked(raw_artist, raw_track, blocklist):
+        log.info("Blocked phantom: %s - %s", raw_artist, raw_track)
         return False
 
-    if state.is_duplicate(artist, track):
-        log.debug("Skipping duplicate: %s - %s", artist, track)
+    artist = canonical_artist(raw_artist)
+    track = canonical_track(raw_track)
+
+    now = time.time()
+    if state.is_duplicate(artist, track, now):
+        log.debug("Skipping duplicate within %ds: %s - %s", state.cooldown, artist, track)
         return False
 
     payload = {
@@ -314,7 +365,7 @@ def submit_to_listenbrainz(match: dict, *, token: str, state: ScrobbleState,
 
             if resp.status_code == 200:
                 log.info("✓ Scrobbled: %s - %s", artist, track)
-                state.record_scrobble(artist, track)
+                state.record_scrobble(artist, track, now)
                 return True
             else:
                 log.error(
@@ -387,6 +438,7 @@ def load_config() -> dict:
         "rms_stride": int(os.environ.get("RMS_STRIDE", "16")),
         "recognize_durations": [20, 40],
         "recognition_cooldown": int(os.environ.get("RECOGNITION_COOLDOWN", "10")),
+        "dedup_cooldown": int(os.environ.get("DEDUP_COOLDOWN", "480")),
         "log_level": os.environ.get("LOG_LEVEL", "INFO"),
     }
 
@@ -407,7 +459,7 @@ def main_loop():
     from algorithm import SignatureGenerator
     from communication import recognize_song_from_signature
 
-    state = ScrobbleState()
+    state = ScrobbleState(cooldown=cfg["dedup_cooldown"])
 
     blocklist_path = os.environ.get(
         "BLOCKLIST_FILE",
@@ -436,6 +488,8 @@ def main_loop():
         "/".join(str(d) for d in cfg["recognize_durations"]),
     )
     log.info("Recognition cooldown: %ds", cfg["recognition_cooldown"])
+    log.info("Dedup cooldown: %ds (suppress same track re-scrobbling within this window)",
+             cfg["dedup_cooldown"])
     log.info(
         "Audio format: %dHz, %dch, %s",
         cfg["sample_rate"], cfg["channels"], cfg["sample_format"],

@@ -9,6 +9,9 @@ import requests
 
 from scrobbler import (
     ScrobbleState,
+    canonical_artist,
+    canonical_track,
+    dedup_key,
     rms_of_raw_24bit,
     submit_to_listenbrainz,
     recognize_track,
@@ -116,6 +119,71 @@ class TestScrobbleState:
         assert state.artist == "Artist"
         assert state.track == "Track"
         assert before <= state.scrobbled_at <= after
+
+    def test_duplicate_within_cooldown(self):
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Artist", "Track", now=1000.0)
+        # Same track 2 minutes later — a recognizer double-log.
+        assert state.is_duplicate("Artist", "Track", now=1000.0 + 120)
+
+    def test_duplicate_expires_after_cooldown(self):
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Artist", "Track", now=1000.0)
+        # Same track 10 minutes later — a genuine side replay, not a dup.
+        assert not state.is_duplicate("Artist", "Track", now=1000.0 + 600)
+
+    def test_duplicate_detected_when_other_track_plays_between(self):
+        # The old "last track only" logic missed this; the cooldown map does not.
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Pavement", "5-4=Unity", now=1000.0)
+        state.record_scrobble("Pavement", "Range Life", now=1000.0 + 60)
+        assert state.is_duplicate("Pavement", "5-4=Unity", now=1000.0 + 120)
+
+    def test_remaster_variant_is_duplicate(self):
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Pavement", "Ann Don't Cry", now=1000.0)
+        assert state.is_duplicate(
+            "Pavement", "Ann Don't Cry (2022 Remaster)", now=1000.0 + 90
+        )
+
+    def test_localized_artist_variant_is_duplicate(self):
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Pavement", "5-4=Unity", now=1000.0)
+        assert state.is_duplicate(
+            "Pavement(人行道合唱团)", "5-4=Unity", now=1000.0 + 90
+        )
+
+    def test_distinct_mixes_not_duplicate(self):
+        # Different mixes of an EP track are distinct — must NOT collapse.
+        state = ScrobbleState(cooldown=480)
+        state.record_scrobble("Aphex Twin", "Come to Daddy (Pappy Mix)", now=1000.0)
+        assert not state.is_duplicate(
+            "Aphex Twin", "Come to Daddy (Little Lord Faulteroy Mix)", now=1000.0 + 120
+        )
+
+
+class TestCanonicalize:
+    def test_strips_remaster_tag(self):
+        assert canonical_track("Ann Don't Cry (2022 Remaster)") == "Ann Don't Cry"
+        assert canonical_track("The New Nathan Detroits (Remastered 2023)") == \
+            "The New Nathan Detroits"
+        assert canonical_track("Hurt - 2002 Remaster") == "Hurt"
+
+    def test_keeps_mix_and_demo_and_feat(self):
+        assert canonical_track("Come to Daddy (Little Lord Faulteroy Mix)") == \
+            "Come to Daddy (Little Lord Faulteroy Mix)"
+        assert canonical_track("First Day Back (Demo Version)") == \
+            "First Day Back (Demo Version)"
+        assert canonical_track("Roses (feat. Georgia Anne Muldrow)") == \
+            "Roses (feat. Georgia Anne Muldrow)"
+
+    def test_strips_localized_artist(self):
+        assert canonical_artist("Pavement(人行道合唱团)") == "Pavement"
+        assert canonical_artist("Pete Rock & C.L. Smooth") == "Pete Rock & C.L. Smooth"
+
+    def test_dedup_key_collapses_variants(self):
+        assert dedup_key("Pavement", "Ann Don't Cry (2022 Remaster)") == \
+            dedup_key("Pavement", "Ann Don't Cry")
 
 
 # ---------------------------------------------------------------------------
